@@ -2,15 +2,9 @@ package main
 
 import (
 	"fmt"
+	"log"
+	"os"
 )
-
-type OpcodeFunc func(*CPU)
-
-type Instruction struct {
-	Name   string
-	Method OpcodeFunc
-	Cycles int
-}
 
 type CPU struct {
 	A              uint8
@@ -23,15 +17,11 @@ type CPU struct {
 	L              uint8
 	SP             uint16
 	PC             uint16
+	IME            bool
 	bus            Memory
 	instructions   [256]Instruction
 	cbInstructions [256]Instruction
 	duration       int
-}
-
-type Memory interface {
-	Read(addr uint16) uint8
-	Write(addr uint16, val uint8)
 }
 
 func NewCPU(bus Memory) *CPU {
@@ -46,80 +36,94 @@ func NewCPU(bus Memory) *CPU {
 	return cpu
 }
 
-func (c *CPU) initInstructions() {
-	for i := range 256 {
-		c.instructions[i] = Instruction{
-			Name: "UNKNOWN",
-			Method: func(cpu *CPU) {
-				fmt.Printf("Unknown Opcode: 0x%X\n", cpu.bus.Read(cpu.PC-1))
-			},
-			Cycles: 0,
-		}
-		c.cbInstructions[i] = Instruction{
-			Name: "UNKNOWN CB",
-			Method: func(cpu *CPU) {
-				fmt.Printf("Unknown CB Opcode: 0x%X\n", cpu.bus.Read(cpu.PC-1))
-			},
-			Cycles: 0,
-		}
-	}
+func (c *CPU) ReadHL() uint16 {
+	return uint16(c.H)<<8 | uint16(c.L)
+}
 
-	c.instructions[0x00] = Instruction{Name: "NOP", Cycles: 4, Method: func(c *CPU) {}}
+func (c *CPU) ReadAF() uint16 {
+	return uint16(c.A)<<8 | uint16(c.F)
+}
 
-	c.instructions[0xC3] = Instruction{
-		Name: "JP nn", Cycles: 16, Method: func(c *CPU) {
-			c.PC = c.fetchWord()
-		},
-	}
+func (c *CPU) WriteAF(value uint16) {
+	high := uint8(value >> 8)
+	low := uint8(value & 0xFF)
+	c.A = high
+	c.F = low
+}
 
-	c.instructions[0xCD] = Instruction{
-		Name: "CALL nn", Cycles: 24, Method: func(c *CPU) {
-			target := c.fetchWord()
-			c.push(c.PC)
-			c.PC = target
-		},
+func (c *CPU) GetReg8(id int) uint8 {
+	switch id {
+	case 0:
+		return c.B
+	case 1:
+		return c.C
+	case 2:
+		return c.D
+	case 3:
+		return c.E
+	case 4:
+		return c.H
+	case 5:
+		return c.L
+	case 6:
+		return c.bus.Read(c.ReadHL())
+	case 7:
+		return c.A
 	}
+	return 0xFF
+}
 
-	c.instructions[0xC9] = Instruction{
-		Name: "RET", Cycles: 16, Method: func(c *CPU) {
-			c.PC = c.pop()
-		},
+func (c *CPU) WriteReg8(id int, v uint8) {
+	switch id {
+	case 0:
+		c.B = v
+	case 1:
+		c.C = v
+	case 2:
+		c.D = v
+	case 3:
+		c.E = v
+	case 4:
+		c.H = v
+	case 5:
+		c.L = v
+	case 6:
+		c.bus.Write(c.ReadHL(), v)
+	case 7:
+		c.A = v
 	}
+}
 
-	c.instructions[0x80] = Instruction{
-		Name: "ADD A,B", Cycles: 4, Method: func(c *CPU) {
-			valA := uint16(c.A)
-			valB := uint16(c.B)
-			sum := valA + valB
-			halfCarry := (c.A&0x0F)+(c.B&0x0F) > 0x0F
-			carry := sum > 0xFF
-			zero := (sum & 0xFF) == 0
-			c.A = uint8(sum)
-			c.setFlags(zero, false, halfCarry, carry)
-		},
+func (c *CPU) SetReg16(id int, value uint16) {
+	high := uint8(value >> 8)
+	low := uint8(value & 0xFF)
+	switch id {
+	case 0:
+		c.B = high
+		c.C = low
+	case 1:
+		c.D = high
+		c.E = low
+	case 2:
+		c.H = high
+		c.L = low
+	case 3:
+		c.SP = value
 	}
+}
 
-	c.instructions[0x90] = Instruction{
-		Name: "SUB A,B", Cycles: 4, Method: func(c *CPU) {
-			valA := uint16(c.A)
-			valB := uint16(c.B)
-			sub := valA - valB
-			halfCarry := (c.A & 0x0F) < (c.B & 0x0F)
-			carry := valA < valB
-			zero := (sub & 0xFF) == 0
-			c.A = uint8(sub)
-			c.setFlags(zero, true, halfCarry, carry)
-		},
+func (c *CPU) GetReg16(id int) uint16 {
+	switch id {
+	case 0:
+		return uint16(c.B)<<8 | uint16(c.C)
+	case 1:
+		return uint16(c.D)<<8 | uint16(c.E)
+	case 2:
+		return uint16(c.H)<<8 | uint16(c.L)
+	case 3:
+		return c.SP
 	}
-
-	c.instructions[0xCB] = Instruction{
-		Name: "PREFIX CB", Cycles: 0, Method: func(c *CPU) {
-			cbOpcode := c.fetchByte()
-			ins := c.cbInstructions[cbOpcode]
-			ins.Method(c)
-			c.duration += ins.Cycles
-		},
-	}
+	return 0
 }
 
 func (c *CPU) Step() int {
@@ -174,10 +178,24 @@ func (c *CPU) setFlags(z, n, h, cy bool) {
 	c.F = f
 }
 
-type GBMemory struct{ data [65536]byte }
+func main() {
+	mmu := &MMU{}
+	cpu := NewCPU(mmu)
 
-func (m *GBMemory) Read(a uint16) uint8      { return m.data[a] }
-func (m *GBMemory) Write(a uint16, v uint8)  { m.data[a] = v }
-func (m *GBMemory) LoadCartridge(rom []byte) { copy(m.data[0:], rom) }
+	rom, err := os.ReadFile("cpu_instrs.gb")
+	if err != nil {
+		log.Fatal(err)
+	}
+	mmu.LoadCartridge(rom)
 
-func main() {}
+	cpu.PC = 0x0100
+
+	fmt.Println("--- System Start ---")
+
+	for {
+
+		cycles := cpu.Step()
+
+		_ = cycles
+	}
+}
