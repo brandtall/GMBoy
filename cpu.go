@@ -126,6 +126,77 @@ func (c *CPU) GetReg16(id int) uint16 {
 	return 0
 }
 
+func (c *CPU) ExecuteALU(op int, val uint8) {
+	valA := uint16(c.A)
+	valB := uint16(val)
+
+	switch op {
+	case 0:
+		sum := valA + valB
+		halfCarry := (valA&0x0F)+(valB&0x0F) > 0x0F
+		carry := sum > 0xFF
+		zero := (sum & 0xFF) == 0x00
+		c.A = uint8(sum)
+		c.setFlags(zero, false, halfCarry, carry)
+	case 1:
+		carryIn := uint16(0)
+		if (c.F & 0x10) != 0 {
+			carryIn = 1
+		}
+		sum := valA + valB + carryIn
+		halfCarry := (uint16(c.A&0x0F) + uint16(val&0x0F) + carryIn) > 0x0F
+		carry := sum > 0xFF
+		zero := (sum & 0xFF) == 0
+		c.A = uint8(sum)
+		c.setFlags(zero, false, halfCarry, carry)
+
+	case 2:
+		sub := valA - valB
+		halfCarry := (c.A & 0x0F) < (val & 0x0F)
+		carry := valA < valB
+		zero := (sub & 0xFF) == 0
+		c.A = uint8(sub)
+		c.setFlags(zero, true, halfCarry, carry)
+
+	case 3:
+		carryIn := uint16(0)
+		if (c.F & 0x10) != 0 {
+			carryIn = 1
+		}
+		sub := valA - valB - carryIn
+		halfCarry := int16(c.A&0xF)-int16(val&0xF)-int16(carryIn) < 0
+		carry := int16(valA)-int16(valB)-int16(carryIn) < 0
+		zero := (sub & 0xFF) == 0
+		c.A = uint8(sub)
+		c.setFlags(zero, true, halfCarry, carry)
+
+	case 4:
+		res := valA & valB
+		zero := (res & 0xFF) == 0
+		c.A = uint8(res)
+		c.setFlags(zero, false, true, false)
+
+	case 5:
+		res := valA ^ valB
+		zero := (res & 0xFF) == 0
+		c.A = uint8(res)
+		c.setFlags(zero, false, false, false)
+
+	case 6:
+		res := valA | valB
+		zero := (res & 0xFF) == 0
+		c.A = uint8(res)
+		c.setFlags(zero, false, false, false)
+
+	case 7:
+		sub := valA - valB
+		halfCarry := (c.A & 0x0F) < (val & 0x0F)
+		carry := valA < valB
+		zero := (sub & 0xFF) == 0
+		c.setFlags(zero, true, halfCarry, carry)
+	}
+}
+
 func (c *CPU) Step() int {
 	c.duration = 0
 	opcode := c.fetchByte()
@@ -176,6 +247,68 @@ func (c *CPU) setFlags(z, n, h, cy bool) {
 		f |= 0x10
 	}
 	c.F = f
+}
+
+func (c *CPU) executeCBShift(op int, val uint8) (uint8, uint8) {
+	var res uint8
+	var flagC bool
+
+	switch op {
+	case 0:
+		bit7 := (val >> 7) & 0x01
+		res = (val << 1) | bit7
+		flagC = bit7 != 0
+
+	case 1:
+		bit0 := val & 0x01
+		res = (val >> 1) | (bit0 << 7)
+		flagC = bit0 != 0
+
+	case 2:
+		oldCarry := uint8(0)
+		if (c.F & 0x10) != 0 {
+			oldCarry = 1
+		}
+		res = (val << 1) | oldCarry
+		flagC = (val & 0x80) != 0
+
+	case 3:
+		oldCarry := uint8(0)
+		if (c.F & 0x10) != 0 {
+			oldCarry = 0x80
+		}
+		res = (val >> 1) | oldCarry
+		flagC = (val & 0x01) != 0
+
+	case 4:
+		flagC = (val & 0x80) != 0
+		res = val << 1
+
+	case 5:
+		flagC = (val & 0x01) != 0
+		msb := val & 0x80
+		res = (val >> 1) | msb
+
+	case 6:
+		low := (val & 0x0F) << 4
+		high := (val & 0xF0) >> 4
+		res = low | high
+		flagC = false
+
+	case 7:
+		flagC = (val & 0x01) != 0
+		res = val >> 1
+	}
+
+	var newF uint8
+	if res == 0 {
+		newF |= 0x80
+	}
+	if flagC {
+		newF |= 0x10
+	}
+
+	return res, newF
 }
 
 func main() {

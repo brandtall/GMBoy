@@ -69,86 +69,161 @@ func (c *CPU) initInstructions() {
 		c.instructions[op] = Instruction{
 			Name: fmt.Sprintf("ALU %d,%d", aluOp, srcReg),
 			Method: func(cpu *CPU) {
-				valA := uint16(cpu.A)
-				valB := uint16(cpu.GetReg8(srcReg))
-
-				switch aluOp {
-				case 0:
-					sum := valA + valB
-
-					halfCarry := (cpu.A&0x0F)+(uint8(valB)&0x0F) > 0x0F
-					carry := sum > 0xFF
-					zero := (sum & 0xFF) == 0
-					cpu.A = uint8(sum)
-					cpu.setFlags(zero, false, halfCarry, carry)
-
-				case 1:
-					carryIn := uint16(0)
-					if (cpu.F & 0x10) != 0 {
-						carryIn = 1
-					}
-
-					sum := valA + valB + carryIn
-
-					halfCarry := (uint16(cpu.A&0x0F) + uint16(uint8(valB)&0x0F) + carryIn) > 0x0F
-					carry := sum > 0xFF
-					zero := (sum & 0xFF) == 0
-					cpu.A = uint8(sum)
-					cpu.setFlags(zero, false, halfCarry, carry)
-
-				case 2:
-					sub := valA - valB
-					halfCarry := (cpu.A & 0x0F) < (uint8(valB) & 0x0F)
-					carry := valA < valB
-					zero := (sub & 0xFF) == 0
-					cpu.A = uint8(sub)
-					cpu.setFlags(zero, true, halfCarry, carry)
-
-				case 3:
-					carryIn := uint16(0)
-					if (cpu.F & 0x10) != 0 {
-						carryIn = 1
-					}
-
-					sub := valA - valB - carryIn
-
-					halfCarry := int16(cpu.A&0xF)-int16(valB&0xF)-int16(carryIn) < 0
-					carry := int16(valA)-int16(valB)-int16(carryIn) < 0
-
-					zero := (sub & 0xFF) == 0
-					cpu.A = uint8(sub)
-					cpu.setFlags(zero, true, halfCarry, carry)
-
-				case 4:
-					res := valA & valB
-					zero := (res & 0xFF) == 0
-					cpu.A = uint8(res)
-
-					cpu.setFlags(zero, false, true, false)
-
-				case 5:
-					res := valA ^ valB
-					zero := (res & 0xFF) == 0
-					cpu.A = uint8(res)
-					cpu.setFlags(zero, false, false, false)
-
-				case 6:
-					res := valA | valB
-					zero := (res & 0xFF) == 0
-					cpu.A = uint8(res)
-					cpu.setFlags(zero, false, false, false)
-
-				case 7:
-
-					sub := valA - valB
-					halfCarry := (cpu.A & 0x0F) < (uint8(valB) & 0x0F)
-					carry := valA < valB
-					zero := (sub & 0xFF) == 0
-
-					cpu.setFlags(zero, true, halfCarry, carry)
-				}
+				val := cpu.GetReg8(srcReg)
+				cpu.ExecuteALU(aluOp, val)
 			},
 			Cycles: cycles,
+		}
+	}
+
+	for i := range 8 {
+		aluOp := i
+		op := 0xC6 + (i * 8)
+
+		c.instructions[op] = Instruction{
+			Name: fmt.Sprintf("ALU A, n (%d)", aluOp),
+			Method: func(c *CPU) {
+				val := c.fetchByte()
+				c.ExecuteALU(aluOp, val)
+			},
+			Cycles: 8,
+		}
+	}
+
+	for i := range 2 {
+		regID := i
+
+		storeOp := 0x02 + (i * 16)
+		c.instructions[storeOp] = Instruction{
+			Name: fmt.Sprintf("LD (r16 %d), A", regID),
+			Method: func(c *CPU) {
+				addr := c.GetReg16(regID)
+				c.bus.Write(addr, c.A)
+			},
+			Cycles: 8,
+		}
+
+		loadOp := 0x0A + (i * 16)
+		c.instructions[loadOp] = Instruction{
+			Name: fmt.Sprintf("LD A, (r16 %d)", regID),
+			Method: func(c *CPU) {
+				addr := c.GetReg16(regID)
+				c.A = c.bus.Read(addr)
+			},
+			Cycles: 8,
+		}
+	}
+
+	for i := range 4 {
+		condition := i
+		op := 0xC4 + (i * 8)
+
+		c.instructions[op] = Instruction{
+			Name: fmt.Sprintf("CALL cc, nn (%d)", condition),
+			Method: func(c *CPU) {
+				target := c.fetchWord()
+
+				shouldCall := false
+				switch condition {
+				case 0:
+					shouldCall = (c.F & 0x80) == 0
+				case 1:
+					shouldCall = (c.F & 0x80) != 0
+				case 2:
+					shouldCall = (c.F & 0x10) == 0
+				case 3:
+					shouldCall = (c.F & 0x10) != 0
+				}
+
+				if shouldCall {
+					c.push(c.PC)
+					c.PC = target
+					c.duration += 12
+				}
+			},
+			Cycles: 12,
+		}
+	}
+
+	for i := range 4 {
+		condition := i
+		op := 0xC2 + (i * 8)
+
+		c.instructions[op] = Instruction{
+			Name: fmt.Sprintf("JP cc, nn (%d)", condition),
+			Method: func(c *CPU) {
+				target := c.fetchWord()
+
+				shouldJump := false
+				switch condition {
+				case 0:
+					shouldJump = (c.F & 0x80) == 0
+				case 1:
+					shouldJump = (c.F & 0x80) != 0
+				case 2:
+					shouldJump = (c.F & 0x10) == 0
+				case 3:
+					shouldJump = (c.F & 0x10) != 0
+				}
+
+				if shouldJump {
+					c.PC = target
+					c.duration += 4
+				}
+			},
+			Cycles: 12,
+		}
+	}
+
+	for i := range 4 {
+		condition := i
+		op := 0xC0 + (i * 8)
+
+		c.instructions[op] = Instruction{
+			Name: fmt.Sprintf("RET cc (%d)", condition),
+			Method: func(c *CPU) {
+				shouldRet := false
+				switch condition {
+				case 0:
+					shouldRet = (c.F & 0x80) == 0
+				case 1:
+					shouldRet = (c.F & 0x80) != 0
+				case 2:
+					shouldRet = (c.F & 0x10) == 0
+				case 3:
+					shouldRet = (c.F & 0x10) != 0
+				}
+
+				if shouldRet {
+					c.PC = c.pop()
+					c.duration += 12
+				}
+			},
+			Cycles: 8,
+		}
+	}
+
+	for i := range 4 {
+		regID := i
+		op := 0x09 + (i * 16)
+
+		c.instructions[op] = Instruction{
+			Name: fmt.Sprintf("ADD HL, r16(%d)", regID),
+			Method: func(c *CPU) {
+				valHL := uint32(c.GetReg16(2))
+				valRR := uint32(c.GetReg16(regID))
+
+				sum := valHL + valRR
+
+				currentZ := (c.F & 0x80) != 0
+
+				halfCarry := (valHL&0xFFF)+(valRR&0xFFF) > 0xFFF
+				carry := sum > 0xFFFF
+
+				c.SetReg16(2, uint16(sum))
+				c.setFlags(currentZ, false, halfCarry, carry)
+			},
+			Cycles: 8,
 		}
 	}
 
@@ -182,7 +257,7 @@ func (c *CPU) initInstructions() {
 				halfCarry := (val & 0x0F) == 0x00
 				carry := c.F & 0x10
 				zero := res == 0x00
-				c.setFlags(zero, true, halfCarry, carry == 1)
+				c.setFlags(zero, true, halfCarry, carry != 0)
 			},
 			Cycles: cycles,
 		}
@@ -383,32 +458,6 @@ func (c *CPU) initInstructions() {
 		},
 	}
 
-	c.instructions[0x80] = Instruction{
-		Name: "ADD A,B", Cycles: 4, Method: func(c *CPU) {
-			valA := uint16(c.A)
-			valB := uint16(c.B)
-			sum := valA + valB
-			halfCarry := (c.A&0x0F)+(c.B&0x0F) > 0x0F
-			carry := sum > 0xFF
-			zero := (sum & 0xFF) == 0
-			c.A = uint8(sum)
-			c.setFlags(zero, false, halfCarry, carry)
-		},
-	}
-
-	c.instructions[0x90] = Instruction{
-		Name: "SUB A,B", Cycles: 4, Method: func(c *CPU) {
-			valA := uint16(c.A)
-			valB := uint16(c.B)
-			sub := valA - valB
-			halfCarry := (c.A & 0x0F) < (c.B & 0x0F)
-			carry := valA < valB
-			zero := (sub & 0xFF) == 0
-			c.A = uint8(sub)
-			c.setFlags(zero, true, halfCarry, carry)
-		},
-	}
-
 	c.instructions[0xCB] = Instruction{
 		Name: "PREFIX CB", Cycles: 0, Method: func(c *CPU) {
 			cbOpcode := c.fetchByte()
@@ -517,5 +566,230 @@ func (c *CPU) initInstructions() {
 			}
 		},
 		Cycles: 8,
+	}
+
+	c.instructions[0xE9] = Instruction{
+		Name: "JP (HL)",
+		Method: func(c *CPU) {
+			c.PC = c.GetReg16(2)
+		},
+		Cycles: 4,
+	}
+
+	c.instructions[0xF9] = Instruction{
+		Name: "LD SP, HL",
+		Method: func(c *CPU) {
+			c.SP = c.GetReg16(2)
+		},
+		Cycles: 8,
+	}
+
+	c.instructions[0x07] = Instruction{
+		Name: "RLCA",
+		Method: func(c *CPU) {
+			val := c.A
+			bit7 := (val >> 7) & 0x01
+			res := (val << 1) | bit7
+			c.A = res
+			c.setFlags(false, false, false, bit7 != 0)
+		},
+		Cycles: 4,
+	}
+
+	c.instructions[0x17] = Instruction{
+		Name: "RLA",
+		Method: func(c *CPU) {
+			val := c.A
+			bit7 := (val >> 7) & 0x01
+			oldCarry := uint8(0)
+			if (c.F & 0x10) != 0 {
+				oldCarry = 1
+			}
+			res := (val << 1) | oldCarry
+			c.A = res
+			c.setFlags(false, false, false, bit7 != 0)
+		},
+		Cycles: 4,
+	}
+
+	c.instructions[0x0F] = Instruction{
+		Name: "RRCA",
+		Method: func(c *CPU) {
+			val := c.A
+			bit0 := val & 0x01
+			res := (val >> 1) | (bit0 << 7)
+			c.A = res
+			c.setFlags(false, false, false, bit0 != 0)
+		},
+		Cycles: 4,
+	}
+
+	c.instructions[0x1F] = Instruction{
+		Name: "RRA",
+		Method: func(c *CPU) {
+			val := c.A
+			bit0 := val & 0x01
+			oldCarry := uint8(0)
+			if (c.F & 0x10) != 0 {
+				oldCarry = 128
+			}
+			res := (val >> 1) | oldCarry
+			c.A = res
+			c.setFlags(false, false, false, bit0 != 0)
+		},
+		Cycles: 4,
+	}
+
+	c.instructions[0xF8] = Instruction{
+		Name: "LD HL, SP+n",
+		Method: func(c *CPU) {
+			signedByte := int8(c.fetchByte())
+
+			val := uint16(int32(c.SP) + int32(signedByte))
+
+			c.SetReg16(2, val)
+
+			rawOffset := uint16(uint8(signedByte))
+
+			halfCarry := (c.SP&0x0F)+(rawOffset&0x0F) > 0x0F
+			carry := (c.SP&0xFF)+(rawOffset&0xFF) > 0xFF
+
+			c.setFlags(false, false, halfCarry, carry)
+		},
+		Cycles: 12,
+	}
+
+	c.instructions[0x2F] = Instruction{
+		Name: "CPL",
+		Method: func(c *CPU) {
+			c.A = ^c.A
+
+			z := (c.F & 0x80) != 0
+			cy := (c.F & 0x10) != 0
+			c.setFlags(z, true, true, cy)
+		},
+		Cycles: 4,
+	}
+
+	c.instructions[0x37] = Instruction{
+		Name: "SCF",
+		Method: func(c *CPU) {
+			z := (c.F & 0x80) != 0
+			c.setFlags(z, false, false, true)
+		},
+		Cycles: 4,
+	}
+
+	c.instructions[0x3F] = Instruction{
+		Name: "CCF",
+		Method: func(c *CPU) {
+			z := (c.F & 0x80) != 0
+			cy := (c.F & 0x10) != 0
+			c.setFlags(z, false, false, !cy)
+		},
+		Cycles: 4,
+	}
+
+	for i := range 64 {
+		op := i
+		rotType := (op >> 3) & 0x07
+		regID := op & 0x07
+
+		cycles := 8
+		if regID == 6 {
+			cycles = 16
+		}
+
+		c.cbInstructions[op] = Instruction{
+			Name: fmt.Sprintf("CB ROT %d, %d", rotType, regID),
+			Method: func(c *CPU) {
+				val := c.GetReg8(regID)
+				res, newF := c.executeCBShift(rotType, val)
+				c.WriteReg8(regID, res)
+				c.F = newF
+			},
+			Cycles: cycles,
+		}
+
+		c.instructions[0x10] = Instruction{
+			Name: "STOP",
+			Method: func(c *CPU) {
+				c.fetchByte()
+			},
+			Cycles: 4,
+		}
+
+		c.instructions[0x76] = Instruction{
+			Name: "HALT",
+			Method: func(c *CPU) {
+			},
+			Cycles: 4,
+		}
+
+		c.instructions[0x08] = Instruction{
+			Name: "LD (nn), SP",
+			Method: func(c *CPU) {
+				addr := c.fetchWord()
+				low := uint8(c.SP & 0xFF)
+				high := uint8(c.SP >> 8)
+				c.bus.Write(addr, low)
+				c.bus.Write(addr+1, high)
+			},
+			Cycles: 20,
+		}
+
+		c.instructions[0xE8] = Instruction{
+			Name: "ADD SP, n",
+			Method: func(c *CPU) {
+				signedByte := int8(c.fetchByte())
+
+				rawOffset := uint16(uint8(signedByte))
+				halfCarry := (c.SP&0x0F)+(rawOffset&0x0F) > 0x0F
+				carry := (c.SP&0xFF)+(rawOffset&0xFF) > 0xFF
+
+				c.SP = uint16(int32(c.SP) + int32(signedByte))
+				c.setFlags(false, false, halfCarry, carry)
+			},
+			Cycles: 16,
+		}
+
+		c.instructions[0x27] = Instruction{
+			Name: "DAA",
+			Method: func(c *CPU) {
+				val := int(c.A)
+				correction := 0
+				flagC := (c.F & 0x10) != 0
+				flagH := (c.F & 0x20) != 0
+				flagN := (c.F & 0x40) != 0
+
+				if !flagN {
+					if flagH || (val&0x0F) > 9 {
+						correction |= 0x06
+					}
+					if flagC || val > 0x99 {
+						correction |= 0x60
+						flagC = true
+					}
+				} else {
+					if flagH {
+						correction |= 0x06
+					}
+					if flagC {
+						correction |= 0x60
+					}
+				}
+
+				if flagN {
+					val -= correction
+				} else {
+					val += correction
+				}
+
+				val &= 0xFF
+				c.A = uint8(val)
+				c.setFlags(val == 0, flagN, false, flagC)
+			},
+			Cycles: 4,
+		}
 	}
 }
