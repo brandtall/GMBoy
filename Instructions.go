@@ -711,6 +711,70 @@ func (c *CPU) initInstructions() {
 			Cycles: cycles,
 		}
 
+		for i := range 64 {
+			op := 0x40 + i
+			bit := (op >> 3) & 0x07
+			regID := op & 0x07
+
+			cycles := 8
+			if regID == 6 {
+				cycles = 12
+			}
+
+			c.cbInstructions[op] = Instruction{
+				Name: fmt.Sprintf("BIT %d, r(%d)", bit, regID),
+				Method: func(c *CPU) {
+					val := c.GetReg8(regID)
+					isSet := (val & (1 << bit)) != 0
+
+					currentC := (c.F & 0x10) != 0
+					c.setFlags(!isSet, false, true, currentC)
+				},
+				Cycles: cycles,
+			}
+		}
+
+		for i := range 64 {
+			op := 0x80 + i
+			bit := (op >> 3) & 0x07
+			regID := op & 0x07
+
+			cycles := 8
+			if regID == 6 {
+				cycles = 16
+			}
+
+			c.cbInstructions[op] = Instruction{
+				Name: fmt.Sprintf("RES %d, r(%d)", bit, regID),
+				Method: func(c *CPU) {
+					val := c.GetReg8(regID)
+					res := val & ^(1 << bit)
+					c.WriteReg8(regID, res)
+				},
+				Cycles: cycles,
+			}
+		}
+
+		for i := range 64 {
+			op := 0xC0 + i
+			bit := (op >> 3) & 0x07
+			regID := op & 0x07
+
+			cycles := 8
+			if regID == 6 {
+				cycles = 16
+			}
+
+			c.cbInstructions[op] = Instruction{
+				Name: fmt.Sprintf("SET %d, r(%d)", bit, regID),
+				Method: func(c *CPU) {
+					val := c.GetReg8(regID)
+					res := val | (1 << bit)
+					c.WriteReg8(regID, res)
+				},
+				Cycles: cycles,
+			}
+		}
 		c.instructions[0x10] = Instruction{
 			Name: "STOP",
 			Method: func(c *CPU) {
